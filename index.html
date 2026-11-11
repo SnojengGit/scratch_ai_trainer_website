@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scratch GPT Trainer</title>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgpu@4.22.0/dist/tf-backend-webgpu.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-wasm@4.22.0/dist/tf-backend-wasm.min.js"></script>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 980px; margin: 0 auto; padding: 12px 16px 40px; color: #222; background: #fff; }
+  h1 { font-size: 22px; margin: 8px 0 4px; }
+  h2 { font-size: 16px; margin: 18px 0 6px; border-bottom: 1px solid #ddd; padding-bottom: 3px; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px 22px; }
+  .sl { display: grid; grid-template-columns: 130px 170px 70px; align-items: center; gap: 6px; font-size: 14px; }
+  .sl input { width: 100%; }
+  textarea { width: 100%; height: 110px; font-family: monospace; font-size: 12px; box-sizing: border-box; }
+  button { font-size: 14px; padding: 6px 12px; margin: 2px 4px 2px 0; cursor: pointer; }
+  button:disabled { cursor: default; opacity: .5; }
+  canvas { border: 1px solid #ccc; width: 100%; max-width: 940px; height: 260px; display: block; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px; font-size: 13px; margin: 8px 0; }
+  .stats div { background: #f4f4f4; padding: 6px 8px; border-radius: 4px; }
+  .stats b { display: block; font-size: 16px; }
+  pre { background: #f6f6f6; padding: 8px; white-space: pre-wrap; word-break: break-word; font-size: 13px; min-height: 40px; }
+  .warn { color: #b45309; font-size: 13px; }
+  .muted { color: #666; font-size: 13px; }
+  select, input[type=text], input[type=number] { font-size: 14px; padding: 3px; }
+</style>
+</head>
+<body>
+<h1>Scratch GPT Trainer</h1>
+<div class="muted">Train a tiny character-level transformer (GPT) in your browser on your GPU or CPU, then export the weights as a text file that Scratch can import into a list.</div>
+
+<h2>1. Training text</h2>
+<div class="muted">Paste text or load a .txt file. Characters outside plain ASCII are dropped. More text = better model (at least ~100 KB is good).
+The sample text is from Simple English Wikipedia (CC BY-SA).</div>
+<textarea id="text"></textarea>
+<div><input type="file" id="file" accept=".txt,text/plain"> <span id="textinfo" class="muted"></span></div>
+
+<h2>2. Model size</h2>
+<div class="row">
+  <div class="sl"><label for="d">Width (d)</label><input type="range" id="d" min="16" max="384" step="16" value="64"><span id="dv"></span></div>
+  <div class="sl"><label for="L">Layers</label><input type="range" id="L" min="1" max="8" step="1" value="3"><span id="Lv"></span></div>
+  <div class="sl"><label for="H">Attention heads</label><input type="range" id="H" min="0" max="3" step="1" value="2"><span id="Hv"></span></div>
+  <div class="sl"><label for="T">Context (chars)</label><input type="range" id="T" min="16" max="256" step="16" value="64"><span id="Tv"></span></div>
+</div>
+<div class="stats">
+  <div>Parameters<b id="pcount">-</b></div>
+  <div>Vocabulary<b id="vcount">-</b></div>
+  <div>Export size (approx.)<b id="esize">-</b></div>
+  <div>Scratch speed (approx.)<b id="sspeed">-</b></div>
+</div>
+<div id="sizewarn" class="warn"></div>
+
+<h2>3. Training settings</h2>
+<div class="row">
+  <div class="sl"><label for="B">Batch size</label><input type="range" id="B" min="4" max="128" step="4" value="32"><span id="Bv"></span></div>
+  <div class="sl"><label for="lr">Learning rate</label><input type="range" id="lr" min="-4" max="-2" step="0.1" value="-2.5"><span id="lrv"></span></div>
+  <div class="sl"><label for="S">Training steps</label><input type="range" id="S" min="100" max="20000" step="100" value="3000"><span id="Sv"></span></div>
+  <div class="sl"><label for="dev">Device</label>
+    <select id="dev"><option value="auto">Auto (GPU if possible)</option><option value="webgpu">GPU - WebGPU</option><option value="webgl">GPU - WebGL</option><option value="wasm">CPU - WASM (fast)</option><option value="cpu">CPU - plain JS (slow)</option></select><span id="devv"></span></div>
+</div>
+<div style="margin-top:8px">
+  <button id="build">Build new model</button>
+  <button id="start" disabled>Start training</button>
+  <button id="pause" disabled>Pause</button>
+  <span id="status" class="muted"></span>
+</div>
+
+<h2>4. Progress</h2>
+<div class="stats">
+  <div>Step<b id="sStep">0</b></div>
+  <div>Train loss<b id="sLoss">-</b></div>
+  <div>Validation loss<b id="sVal">-</b></div>
+  <div>Steps / second<b id="sSps">-</b></div>
+  <div>Chars / second<b id="sTps">-</b></div>
+  <div>Learning rate<b id="sLr">-</b></div>
+  <div>Time left<b id="sEta">-</b></div>
+  <div>Backend<b id="sBk">-</b></div>
+</div>
+<canvas id="chart" width="940" height="260"></canvas>
+<div class="muted">Blue: training loss (smoothed). Orange: validation loss (text the model never trains on). Lower is better. A random guess scores ln(vocab).</div>
+<h2>Live sample (every 250 steps)</h2>
+<pre id="sample"></pre>
+
+<h2>5. Try it</h2>
+<div><input type="text" id="prompt" value="The " size="40"> Temperature <input type="number" id="temp" value="0.7" min="0.1" max="2" step="0.1" style="width:60px">
+  Length <input type="number" id="glen" value="300" min="10" max="2000" style="width:70px"> <button id="gen" disabled>Generate</button></div>
+<pre id="out"></pre>
+
+<h2>6. Export</h2>
+<p><button id="expTxt" disabled>Export for Scratch (.txt)</button>
+<span class="muted">Only the numbers. A Scratch list cannot do anything with them by itself: you build the blocks that read them.
+The tutorial project shows how, step by step. Make a list called <b>MODEL</b>, right-click it on the stage,
+choose <b>import</b> and pick this file.</span></p>
+<div class="muted">Format (one item per line): <code>SCRATCHGPT</code>, d, layers, heads, context, vocab size, MLP size, then the vocab as character codes (10 = new line), then every weight.</div>
+<p><button id="expJson" disabled>Export JSON</button> <span class="muted">For your own code (Python, JS...).</span></p>
+
+<h2>7. Building it yourself in Scratch</h2>
+<div class="muted">The tutorial project shows how to build the Scratch side block by block. You will need this text for the <b>all characters</b> variable
+(every character the model can use, in order). Press Copy, then paste it into a <b>set all characters to</b> block.</div>
+<p><input type="text" id="alpha" readonly size="60"> <button id="copyAlpha">Copy all characters</button> <span id="copied" class="muted"></span></p>
+<div class="muted">Test while you build: type the same start text you will use in Scratch, press Show numbers, and compare.
+Each row says which block to click and what your list or variable should show. Small differences in the last digit are fine.</div>
+<p>Test text <input type="text" id="ctext" value="hi" size="10"> <button id="check" disabled>Show numbers</button></p>
+<table id="ctable" style="border-collapse:collapse;font-size:13px"></table>
+
+<script src="app.js"></script>
+</body>
+</html>
